@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useParams } from "next/navigation";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
@@ -9,23 +9,15 @@ import { InsertSidebar } from "@/components/editor/InsertSidebar";
 import { EditorToolbar } from "@/components/editor/EditorToolbarSimple";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { 
-  ArrowLeft, 
-  Star, 
-  Archive, 
-  Trash2, 
-  Share, 
-  MoreHorizontal,
-  Calendar,
-  User
-} from "lucide-react";
-import { toast } from "sonner";
+import { ArrowLeft, Star, Share, MoreHorizontal } from "lucide-react";
+import type { Block } from "@/components/editor/AdvancedNotionEditor";
+import type { TransparentRichTextEditorRef } from "@/components/editor/TransparentRichTextEditor";
 
 interface Note {
   id: string;
   title: string;
   content: string;
-  blocks?: any[];
+  blocks?: Block[];
   isPinned: boolean;
   isArchived: boolean;
   tags: string[];
@@ -45,9 +37,150 @@ export default function NoteEditPage() {
   const [loading, setLoading] = useState(true);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [insertBlockFn, setInsertBlockFn] = useState<((type: string, data?: unknown) => void) | null>(null);
   const [activeFormats, setActiveFormats] = useState<string[]>([]);
-  const [currentBlockType, setCurrentBlockType] = useState('paragraph');
-  const [insertBlockFn, setInsertBlockFn] = useState<((type: string, data?: any) => void) | null>(null);
+  const [getActiveEditorFn, setGetActiveEditorFn] = useState<(() => HTMLTextAreaElement | null) | null>(null);
+  const [lastSelection, setLastSelection] = useState<{
+    blockId: string,
+    start: number,
+    end: number,
+    text: string
+  } | null>(null);
+  const [lastActiveBlockId, setLastActiveBlockId] = useState<string | null>(null);
+  const [formatBlockFn, setFormatBlockFn] = useState<((blockId: string, newContent: string) => void) | null>(null);
+  const blockRefs = useRef<Map<string, TransparentRichTextEditorRef>>(new Map());
+
+  // Fonction pour sauvegarder la sélection actuelle
+  const saveCurrentSelection = useCallback(() => {
+    const activeElement = document.activeElement as HTMLTextAreaElement | HTMLInputElement;
+    if (activeElement && (activeElement.tagName === 'TEXTAREA' || activeElement.tagName === 'INPUT')) {
+      const blockId = activeElement.getAttribute('data-block-id');
+      if (blockId) {
+        const selection = {
+          blockId,
+          start: activeElement.selectionStart || 0,
+          end: activeElement.selectionEnd || 0,
+          text: activeElement.value
+        };
+        setLastSelection(selection);
+        setLastActiveBlockId(blockId);
+        return selection;
+      }
+    }
+    return null;
+  }, []);
+
+  // Fonction pour détecter les formats actifs dans le texte
+  const updateActiveFormats = useCallback(() => {
+    const activeElement = document.activeElement as HTMLTextAreaElement | HTMLInputElement;
+    if (!activeElement || (activeElement.tagName !== 'TEXTAREA' && activeElement.tagName !== 'INPUT')) {
+      setActiveFormats([]);
+      return;
+    }
+
+    // Sauvegarder la sélection quand on détecte les formats
+    saveCurrentSelection();
+
+    const start = activeElement.selectionStart || 0;
+    const end = activeElement.selectionEnd || 0;
+    const blockId = activeElement.getAttribute('data-block-id');
+    
+    if (!blockId) {
+      setActiveFormats([]);
+      return;
+    }
+
+    // Obtenir les formats du bloc correspondant via blockRefs
+    const blockRef = blockRefs.current.get(blockId);
+    if (!blockRef) {
+      // Fallback: détection par markdown pour les éditeurs sans formats structurés
+      const text = activeElement.value;
+      const selectedText = text.substring(start, end);
+      
+      const formats: string[] = [];
+      
+      // Fonction helper pour vérifier les balises markdown
+      const isInMarkdownFormat = (openTag: string, closeTag: string): boolean => {
+        const beforeText = text.substring(0, start);
+        const afterText = text.substring(end);
+        
+        const lastOpenIndex = beforeText.lastIndexOf(openTag);
+        if (lastOpenIndex === -1) return false;
+        
+        const nextCloseIndex = afterText.indexOf(closeTag);
+        if (nextCloseIndex === -1) return false;
+        
+        const textAfterLastOpen = beforeText.substring(lastOpenIndex + openTag.length);
+        return textAfterLastOpen.indexOf(openTag) === -1;
+      };
+      
+      // Détecter les formats markdown
+      if (isInMarkdownFormat('**', '**') || 
+          (selectedText.startsWith('**') && selectedText.endsWith('**') && selectedText.length > 4)) {
+        formats.push('bold');
+      }
+      
+      if (!formats.includes('bold') && (
+          isInMarkdownFormat('*', '*') || 
+          (selectedText.startsWith('*') && selectedText.endsWith('*') && 
+           selectedText.length > 2 && !selectedText.startsWith('**')))) {
+        formats.push('italic');
+      }
+      
+      if (isInMarkdownFormat('<u>', '</u>') || 
+          (selectedText.startsWith('<u>') && selectedText.endsWith('</u>'))) {
+        formats.push('underline');
+      }
+      
+      if (isInMarkdownFormat('`', '`') || 
+          (selectedText.startsWith('`') && selectedText.endsWith('`') && selectedText.length > 2)) {
+        formats.push('inlineCode');
+      }
+      
+      setActiveFormats(formats);
+      return;
+    }
+
+    // Utiliser les formats structurés du TransparentRichTextEditor
+    const blockFormats = blockRef.getFormats();
+    const formats: string[] = [];
+    
+    // Vérifier quels formats s'appliquent à la sélection actuelle
+    for (const format of blockFormats) {
+      // Si la sélection chevauche avec le format
+      if ((start >= format.start && start < format.end) || 
+          (end > format.start && end <= format.end) ||
+          (start <= format.start && end >= format.end)) {
+        // Mapper les types de format pour correspondre aux noms de la toolbar
+        let formatName = format.type;
+        if (format.type === 'code') {
+          formatName = 'inlineCode';
+        }
+        if (!formats.includes(formatName)) {
+          formats.push(formatName);
+        }
+      }
+    }
+
+    console.log('Active formats detected from structured data:', formats, { start, end, blockFormats });
+    setActiveFormats(formats);
+  }, [saveCurrentSelection]);
+
+  const fetchNote = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/notes/${params.id}`);
+      if (response.ok) {
+        const data = await response.json();
+        setNote(data.note);
+        setTitle(data.note.title);
+        setContent(data.note.content);
+      }
+    } catch (error) {
+      console.error("Erreur lors du chargement de la note:", error);
+    } finally {
+      setLoading(false);
+    }
+  }, [params.id]);
 
   useEffect(() => {
     if (params.id && params.id !== "new") {
@@ -66,25 +199,9 @@ export default function NoteEditPage() {
       });
       setLoading(false);
     }
-  }, [params.id]);
+  }, [params.id, fetchNote]);
 
-  const fetchNote = async () => {
-    try {
-      const response = await fetch(`/api/notes/${params.id}`);
-      if (response.ok) {
-        const data = await response.json();
-        setNote(data.note);
-        setTitle(data.note.title);
-        setContent(data.note.content);
-      }
-    } catch (error) {
-      console.error("Erreur lors du chargement de la note:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSave = async (blocks?: any[]) => {
+  const handleSave = async (blocks?: Block[]) => {
     // Sauvegarde intelligente : ne sauvegarde que s'il y a du contenu
     const hasTitle = title.trim().length > 0;
     const hasContent = content.trim().length > 0;
@@ -106,7 +223,7 @@ export default function NoteEditPage() {
         },
         body: JSON.stringify({
           title: title.trim() || "Sans titre",
-          content,
+          content: content || "",
           blocks: blocks || null,
         }),
       });
@@ -131,38 +248,50 @@ export default function NoteEditPage() {
     }
   };
 
-  const handleFormat = (format: string, value?: any) => {
+  const handleFormat = useCallback((format: string, value?: unknown) => {
     console.log('Format:', format, value);
-    // TODO: Implémenter le formatage
-  };
-
-  const handleTagAdd = (tag: string) => {
-    if (note) {
-      const newTags = [...(note.tags || []), tag];
-      setNote({ ...note, tags: newTags });
-      // TODO: Sauvegarder les tags
+    
+    // Sauvegarder la sélection actuelle avant de perdre le focus
+    const currentSelection = saveCurrentSelection();
+    
+    // Utiliser la sélection courante ou la dernière sauvegardée
+    const selection = currentSelection || lastSelection;
+    
+    if (!selection || selection.start === selection.end) {
+      console.warn('Aucune sélection de texte disponible');
+      return;
     }
-  };
 
-  const handleTagRemove = (tag: string) => {
-    if (note) {
-      const newTags = note.tags?.filter(t => t !== tag) || [];
-      setNote({ ...note, tags: newTags });
-      // TODO: Sauvegarder les tags
+    const { blockId, start, end } = selection;
+    console.log('Applying format to selection:', { format, blockId, start, end });
+
+    // Trouver la référence du bloc
+    const blockRef = blockRefs.current?.get(blockId);
+    
+    if (blockRef && typeof blockRef === 'object' && 'applyFormat' in blockRef) {
+      const formatType = format === 'inlineCode' ? 'code' : format as 'bold' | 'italic' | 'underline' | 'code';
+      console.log('Using block ref applyFormat:', formatType);
+      
+      // Appliquer le format
+      blockRef.applyFormat(formatType, start, end);
+      
+      // Restaurer la sélection et sortir du mode édition pour voir le formatage
+      setTimeout(() => {
+        if (blockRef.restoreSelection) {
+          blockRef.restoreSelection(start, end);
+          setTimeout(() => {
+            const textarea = blockRef.getTextarea();
+            if (textarea) {
+              textarea.blur();
+              console.log('Exited edit mode to show formatting');
+            }
+          }, 50);
+        }
+      }, 10);
+    } else {
+      console.warn('Block ref not found or applyFormat method not available');
     }
-  };
-
-  const handleCategoryChange = (categoryId: string) => {
-    console.log('Category change:', categoryId);
-    // TODO: Implémenter le changement de catégorie
-  };
-
-  const handleTogglePublic = () => {
-    if (note) {
-      setNote({ ...note, isPublic: !note.isPublic });
-      // TODO: Sauvegarder l'état public
-    }
-  };
+  }, [saveCurrentSelection, lastSelection, blockRefs]);
 
   const handleTogglePinned = () => {
     if (note) {
@@ -171,7 +300,7 @@ export default function NoteEditPage() {
     }
   };
 
-  const handleInsertBlock = (type: string, data?: any) => {
+  const handleInsertBlock = (type: string, data?: unknown) => {
     console.log('Tentative d\'insertion de bloc:', type, data);
     if (insertBlockFn) {
       insertBlockFn(type, data);
@@ -180,9 +309,91 @@ export default function NoteEditPage() {
     }
   };
 
-  const handleInsertBlockRequest = (insertFn: (type: string, data?: any) => void) => {
+  const handleInsertBlockRequest = (insertFn: (type: string, data?: unknown) => void) => {
     setInsertBlockFn(() => insertFn);
   };
+
+  const handleGetActiveEditorRequest = (getFn: () => HTMLTextAreaElement | null) => {
+    setGetActiveEditorFn(() => getFn);
+  };
+
+  const handleFormatRequest = (formatFn: (blockId: string, newContent: string) => void) => {
+    setFormatBlockFn(() => formatFn);
+  };
+
+  const handleBlockRefsRequest = (getBlockRefsFn: () => Map<string, TransparentRichTextEditorRef>) => {
+    blockRefs.current = getBlockRefsFn();
+  };
+
+  // Gestionnaire de raccourcis clavier global
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        switch (e.key.toLowerCase()) {
+          case 'b':
+            e.preventDefault();
+            handleFormat('bold');
+            break;
+          case 'i':
+            e.preventDefault();
+            handleFormat('italic');
+            break;
+          case 'u':
+            e.preventDefault();
+            handleFormat('underline');
+            break;
+          case 'e':
+            e.preventDefault();
+            handleFormat('inlineCode');
+            break;
+        }
+      }
+    };
+
+    const handleSelectionChange = () => {
+      // Petit délai pour s'assurer que la sélection est bien mise à jour
+      setTimeout(() => {
+        saveCurrentSelection();
+        updateActiveFormats();
+      }, 10);
+    };
+
+    const handleMouseUp = () => {
+      setTimeout(() => {
+        saveCurrentSelection();
+        updateActiveFormats();
+      }, 10);
+    };
+
+    const handleFocus = () => {
+      setTimeout(() => {
+        saveCurrentSelection();
+        updateActiveFormats();
+      }, 10);
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('selectionchange', handleSelectionChange);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('focusin', handleFocus);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('selectionchange', handleSelectionChange);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('focusin', handleFocus);
+    };
+  }, [updateActiveFormats, handleFormat, saveCurrentSelection]);
+
+  // Appel initial pour détecter les formats au montage
+  useEffect(() => {
+    // Délai court pour que l'éditeur soit monté
+    const timer = setTimeout(() => {
+      updateActiveFormats();
+    }, 100);
+    
+    return () => clearTimeout(timer);
+  }, [updateActiveFormats]);
 
   if (!session) {
     return (
@@ -246,11 +457,12 @@ export default function NoteEditPage() {
       <div className="flex-1 flex overflow-hidden">
         {/* Zone d'édition principale */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Barre d'outils */}
+          {/* Nouvelle Toolbar enrichie */}
           <EditorToolbar
             onFormat={handleFormat}
             activeFormats={activeFormats}
-            currentBlockType={currentBlockType}
+            currentBlockType="paragraph"
+            onInsertBlock={insertBlockFn ? (type) => insertBlockFn(type) : undefined}
           />
 
           {/* Éditeur */}
@@ -284,6 +496,8 @@ export default function NoteEditPage() {
                 </div>
               )}
 
+
+
               {/* Éditeur */}
               <AdvancedNotionEditor
                 content={content}
@@ -292,14 +506,19 @@ export default function NoteEditPage() {
                 onSave={handleSave}
                 placeholder=""
                 onInsertBlockRequest={handleInsertBlockRequest}
+                onGetActiveEditor={handleGetActiveEditorRequest}
+                onFormatRequest={handleFormatRequest}
+                onBlockRefsRequest={handleBlockRefsRequest}
+                onSelectionChange={updateActiveFormats}
               />
             </div>
           </div>
         </div>
 
-        {/* Sidebar droite */}
+        {/* Sidebar droite simplifiée */}
         <InsertSidebar
           onInsertBlock={handleInsertBlock}
+          allowedBlocks={["table", "calendar"]}
         />
       </div>
     </div>

@@ -28,9 +28,10 @@ import {
 
 interface InsertSidebarProps {
   onInsertBlock: (type: string, data?: any) => void
+  allowedBlocks?: string[];
 }
 
-export function InsertSidebar({ onInsertBlock }: InsertSidebarProps) {
+export function InsertSidebar({ onInsertBlock, allowedBlocks }: InsertSidebarProps) {
   const basicBlocks = [
     {
       id: 'paragraph',
@@ -179,6 +180,10 @@ export function InsertSidebar({ onInsertBlock }: InsertSidebarProps) {
     }
   ]
 
+  // Filtrage des blocs selon allowedBlocks
+  const filterBlocks = (blocks: any[]) =>
+    allowedBlocks ? blocks.filter((block) => allowedBlocks.includes(block.id)) : blocks;
+
   const BlockCard = ({ block }: { block: any }) => (
     <Card 
       className="cursor-pointer hover:bg-accent transition-colors border-dashed border-2 hover:border-solid"
@@ -210,64 +215,74 @@ export function InsertSidebar({ onInsertBlock }: InsertSidebarProps) {
         <div className="p-4 space-y-6">
           
           {/* Blocs de texte */}
-          <div>
-            <h3 className="font-medium text-sm mb-3 text-muted-foreground uppercase tracking-wide">
-              Texte
-            </h3>
-            <div className="grid gap-2">
-              {basicBlocks.map((block) => (
-                <BlockCard key={block.id} block={block} />
-              ))}
+          {filterBlocks(basicBlocks).length > 0 && (
+            <div>
+              <h3 className="font-medium text-sm mb-3 text-muted-foreground uppercase tracking-wide">
+                Texte
+              </h3>
+              <div className="grid gap-2">
+                {filterBlocks(basicBlocks).map((block) => (
+                  <BlockCard key={block.id} block={block} />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Listes */}
-          <div>
-            <h3 className="font-medium text-sm mb-3 text-muted-foreground uppercase tracking-wide">
-              Listes
-            </h3>
-            <div className="grid gap-2">
-              {listBlocks.map((block) => (
-                <BlockCard key={block.id} block={block} />
-              ))}
+          {filterBlocks(listBlocks).length > 0 && (
+            <div>
+              <h3 className="font-medium text-sm mb-3 text-muted-foreground uppercase tracking-wide">
+                Listes
+              </h3>
+              <div className="grid gap-2">
+                {filterBlocks(listBlocks).map((block) => (
+                  <BlockCard key={block.id} block={block} />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Média */}
-          <div>
-            <h3 className="font-medium text-sm mb-3 text-muted-foreground uppercase tracking-wide">
-              Média
-            </h3>
-            <div className="grid gap-2">
-              {mediaBlocks.map((block) => (
-                <BlockCard key={block.id} block={block} />
-              ))}
+          {filterBlocks(mediaBlocks).length > 0 && (
+            <div>
+              <h3 className="font-medium text-sm mb-3 text-muted-foreground uppercase tracking-wide">
+                Média
+              </h3>
+              <div className="grid gap-2">
+                {filterBlocks(mediaBlocks).map((block) => (
+                  <BlockCard key={block.id} block={block} />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Avancé */}
-          <div>
-            <h3 className="font-medium text-sm mb-3 text-muted-foreground uppercase tracking-wide">
-              Avancé
-            </h3>
-            <div className="grid gap-2">
-              {advancedBlocks.map((block) => (
-                <BlockCard key={block.id} block={block} />
-              ))}
+          {filterBlocks(advancedBlocks).length > 0 && (
+            <div>
+              <h3 className="font-medium text-sm mb-3 text-muted-foreground uppercase tracking-wide">
+                Avancé
+              </h3>
+              <div className="grid gap-2">
+                {filterBlocks(advancedBlocks).map((block) => (
+                  <BlockCard key={block.id} block={block} />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Utilitaires */}
-          <div>
-            <h3 className="font-medium text-sm mb-3 text-muted-foreground uppercase tracking-wide">
-              Utilitaires
-            </h3>
-            <div className="grid gap-2">
-              {utilityBlocks.map((block) => (
-                <BlockCard key={block.id} block={block} />
-              ))}
+          {filterBlocks(utilityBlocks).length > 0 && (
+            <div>
+              <h3 className="font-medium text-sm mb-3 text-muted-foreground uppercase tracking-wide">
+                Utilitaires
+              </h3>
+              <div className="grid gap-2">
+                {filterBlocks(utilityBlocks).map((block) => (
+                  <BlockCard key={block.id} block={block} />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
         </div>
       </div>

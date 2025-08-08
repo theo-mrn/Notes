@@ -1,4 +1,4 @@
-// File: /Users/theo/Developper/WEB/Notes/notes/src/app/layout.tsx
+// File: /Users/theo/Developper/WEB/Notes2/Notes/src/app/layout.tsx
 import * as entry from '../../../src/app/layout.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

@@ -6,10 +6,10 @@
       "static/css/app/layout.css",
       "static/chunks/app/layout.js"
     ],
-    "/notes/page": [
+    "/notes/[id]/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/notes/page.js"
+      "static/chunks/app/notes/[id]/page.js"
     ],
     "/api/auth/[...nextauth]/route": [
       "static/chunks/webpack.js",
@@ -21,10 +21,10 @@
       "static/chunks/main-app.js",
       "static/chunks/app/api/notes/route.js"
     ],
-    "/notes/[id]/page": [
+    "/notes/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/notes/[id]/page.js"
+      "static/chunks/app/notes/page.js"
     ],
     "/api/notes/[id]/route": [
       "static/chunks/webpack.js",

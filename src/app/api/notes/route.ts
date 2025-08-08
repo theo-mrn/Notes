@@ -68,9 +68,10 @@ export async function POST(request: NextRequest) {
 
     const { title, content, blocks, categoryId, tags, isPinned, isPublic } = await request.json();
 
-    if (!title || !content) {
+    // Vérifier qu'au moins le titre ou le contenu est présent
+    if ((!title || title.trim() === '') && (!content || content.trim() === '')) {
       return NextResponse.json(
-        { error: "Titre et contenu requis" },
+        { error: "Le titre ou le contenu est requis" },
         { status: 400 }
       );
     }

@@ -1,4 +1,4 @@
-// File: /Users/theo/Developper/WEB/Notes/notes/src/app/notes/page.tsx
+// File: /Users/theo/Developper/WEB/Notes2/Notes/src/app/notes/page.tsx
 import * as entry from '../../../../src/app/notes/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

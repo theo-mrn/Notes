@@ -9,12 +9,14 @@ import { TableBlock } from './blocks/TableBlock';
 import { ImageBlock } from './blocks/ImageBlock';
 import { CalendarBlock } from './blocks/CalendarBlock';
 import { TodoBlock } from './blocks/TodoBlock';
+import { TransparentRichTextEditor, type TransparentRichTextEditorRef, type TextFormat } from './TransparentRichTextEditor';
 
-interface Block {
+export interface Block {
   id: string;
   type: 'paragraph' | 'heading1' | 'heading2' | 'heading3' | 'bulletList' | 'numberedList' | 'quote' | 'code' | 'divider' | 'table' | 'image' | 'calendar' | 'todoList';
   content: string;
   data?: any;
+  formats?: TextFormat[];
 }
 
 interface AdvancedNotionEditorProps {
@@ -26,6 +28,10 @@ interface AdvancedNotionEditorProps {
   autoSave?: boolean;
   saveInterval?: number;
   onInsertBlockRequest?: (insertFn: (type: string, data?: any) => void) => void;
+  onGetActiveEditor?: (getFn: () => HTMLTextAreaElement | null) => void;
+  onFormatRequest?: (formatFn: (blockId: string, newContent: string) => void) => void;
+  onBlockRefsRequest?: (getBlockRefsFn: () => Map<string, TransparentRichTextEditorRef>) => void;
+  onSelectionChange?: () => void;
 }
 
 export function AdvancedNotionEditor({ 
@@ -36,7 +42,11 @@ export function AdvancedNotionEditor({
   placeholder, 
   autoSave = true, 
   saveInterval = 5000,
-  onInsertBlockRequest
+  onInsertBlockRequest,
+  onGetActiveEditor,
+  onFormatRequest,
+  onBlockRefsRequest,
+  onSelectionChange
 }: AdvancedNotionEditorProps) {
   const [blocks, setBlocks] = useState<Block[]>(() => {
     console.log('Initialisation des blocs:', { initialBlocks, content });
@@ -85,6 +95,7 @@ export function AdvancedNotionEditor({
   const editorRef = useRef<HTMLDivElement>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastCursorPosition = useRef<{blockId: string, position: number, content: string} | null>(null);
+  const blockRefs = useRef<Map<string, TransparentRichTextEditorRef>>(new Map());
 
   useEffect(() => {
     if (content && blocks.length === 1 && !blocks[0].content) {
@@ -166,6 +177,16 @@ export function AdvancedNotionEditor({
     setBlocks(prevBlocks =>
       prevBlocks.map(block =>
         block.id === blockId ? { ...block, content: newContent } : block
+      )
+    );
+    setHasUnsavedChanges(true);
+  };
+
+  // Fonction pour gérer les changements de formats
+  const handleBlockFormatsChange = (blockId: string, formats: TextFormat[]) => {
+    setBlocks(prevBlocks =>
+      prevBlocks.map(block =>
+        block.id === blockId ? { ...block, formats } : block
       )
     );
     setHasUnsavedChanges(true);
@@ -380,21 +401,150 @@ export function AdvancedNotionEditor({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent, blockId: string) => {
+    console.log('handleKeyDown called:', e.key, 'blockId:', blockId);
     const currentBlock = blocks.find(block => block.id === blockId);
     const currentIndex = blocks.findIndex(block => block.id === blockId);
     
     if (e.key === 'Enter') {
       e.preventDefault();
-      addNewBlock(blockId);
+      
+      // Capturer la position du curseur dans le texte
+      const target = e.target as HTMLTextAreaElement | HTMLInputElement;
+      const cursorPosition = target.selectionStart || 0;
+      const currentContent = currentBlock?.content || '';
+      
+      console.log('Enter pressed at position:', cursorPosition, 'in content:', currentContent);
+      
+      // Diviser le contenu au point du curseur
+      const beforeCursor = currentContent.substring(0, cursorPosition);
+      const afterCursor = currentContent.substring(cursorPosition);
+      
+      console.log('Split content:', { beforeCursor, afterCursor });
+      
+      // Créer un nouveau bloc avec le texte après le curseur
+      const newBlock: Block = {
+        id: Date.now().toString(),
+        type: 'paragraph',
+        content: afterCursor,
+        data: undefined
+      };
+      
+      // Faire les deux opérations en une seule fois :
+      // 1. Mettre à jour le bloc actuel avec le texte avant le curseur
+      // 2. Insérer le nouveau bloc après
+      setBlocks(prevBlocks => {
+        const index = prevBlocks.findIndex(block => block.id === blockId);
+        const newBlocks = [...prevBlocks];
+        
+        // Mettre à jour le contenu du bloc actuel
+        newBlocks[index] = { ...newBlocks[index], content: beforeCursor };
+        
+        // Insérer le nouveau bloc après
+        newBlocks.splice(index + 1, 0, newBlock);
+        
+        return newBlocks;
+      });
+      
+      setHasUnsavedChanges(true);
+      
+      // Focuser sur le nouveau bloc et placer le curseur au début
+      setTimeout(() => {
+        const newBlockElement = document.querySelector(`[data-block-id="${newBlock.id}"]`) as HTMLElement;
+        if (newBlockElement) {
+          newBlockElement.focus();
+          // Placer le curseur au début du nouveau bloc
+          if (newBlockElement instanceof HTMLTextAreaElement || newBlockElement instanceof HTMLInputElement) {
+            newBlockElement.setSelectionRange(0, 0);
+          }
+        }
+      }, 0);
     } else if (e.key === '/' && currentBlock?.content === '') {
       // Raccourci pour ouvrir le menu d'insertion
       e.preventDefault();
       console.log('Ouverture du menu d\'insertion pour le bloc:', blockId);
       // TODO: Ouvrir un menu contextuel d'insertion
     } else if (e.key === 'Backspace') {
-      // Si le bloc est vide ou si on est au début du contenu
+      console.log('Backspace key pressed!');
       const target = e.target as HTMLTextAreaElement | HTMLInputElement;
-      const cursorPosition = target.selectionStart;
+      
+      // Capturer la sélection actuelle AVANT modification
+      const currentSelectionStart = target.selectionStart || 0;
+      const currentSelectionEnd = target.selectionEnd || 0;
+      const textLength = target.value.length;
+      const content = currentBlock?.content || '';
+      
+      // Alternative : utiliser l'API de sélection du navigateur
+      const selection = window.getSelection();
+      const selectedText = selection?.toString() || '';
+      
+      console.log('Backspace debug:', {
+        currentSelectionStart,
+        currentSelectionEnd,
+        textLength,
+        content,
+        contentLength: content.length,
+        selectedText: selectedText,
+        selectedTextLength: selectedText.length
+      });
+      
+      // Vérifier si on a une sélection importante (pas juste le curseur)
+      const hasSelection = currentSelectionEnd > currentSelectionStart;
+      const hasLargeSelection = (currentSelectionEnd - currentSelectionStart) >= Math.max(1, textLength * 0.5);
+      const isFullSelection = currentSelectionStart === 0 && currentSelectionEnd === textLength && textLength > 0;
+      const selectedTextMatchesContent = selectedText.length > 0 && selectedText === content.trim();
+      
+      console.log('Backspace selection conditions:', {
+        hasSelection,
+        hasLargeSelection,
+        isFullSelection,
+        selectedTextMatchesContent,
+        shouldDeleteBlock: isFullSelection || hasLargeSelection || selectedTextMatchesContent
+      });
+      
+      // Si on a une sélection importante, traiter comme une suppression de bloc
+      if (isFullSelection || hasLargeSelection || selectedTextMatchesContent) {
+        console.log('Large selection detected, handling as block deletion');
+        e.preventDefault();
+        
+        // Si c'est le dernier bloc et qu'il n'est pas vide, on le vide simplement
+        if (currentIndex === blocks.length - 1 && currentBlock?.content) {
+          console.log('Clearing last block content');
+          setBlocks(prevBlocks => 
+            prevBlocks.map(block =>
+              block.id === blockId ? { ...block, content: '' } : block
+            )
+          );
+          setHasUnsavedChanges(true);
+          return;
+        }
+        
+        // Sinon, supprimer le bloc et aller au précédent
+        if (blocks.length > 1 && currentIndex > 0) {
+          console.log('Deleting block and navigating to previous');
+          const previousBlock = blocks[currentIndex - 1];
+          const previousBlockContent = previousBlock.content;
+          
+          // Supprimer le bloc courant
+          setBlocks(prevBlocks => prevBlocks.filter(block => block.id !== blockId));
+          setHasUnsavedChanges(true);
+          
+          // Focuser sur le bloc précédent à la fin de son contenu
+          setTimeout(() => {
+            const previousElement = document.querySelector(`[data-block-id="${previousBlock.id}"]`) as HTMLElement;
+            if (previousElement) {
+              previousElement.focus();
+              // Placer le curseur à la fin
+              if (previousElement instanceof HTMLTextAreaElement || previousElement instanceof HTMLInputElement) {
+                previousElement.setSelectionRange(previousBlockContent.length, previousBlockContent.length);
+              }
+            }
+          }, 0);
+        }
+        return;
+      }
+      
+      // Logique normale de Backspace (pour curseur ou petites sélections)
+      const cursorPosition = currentSelectionStart;
       
       if (cursorPosition === 0 && currentBlock?.content === '') {
         // Supprimer le bloc vide et revenir au précédent
@@ -447,6 +597,127 @@ export function AdvancedNotionEditor({
             if (previousElement instanceof HTMLTextAreaElement || previousElement instanceof HTMLInputElement) {
               previousElement.setSelectionRange(previousContent.length, previousContent.length);
             }
+          }
+        }, 0);
+      }
+    } else if (e.key === 'Delete') {
+      console.log('Delete key pressed!');
+      const target = e.target as HTMLTextAreaElement | HTMLInputElement;
+      
+      // Utiliser la sélection actuelle AVANT qu'elle ne soit modifiée par l'événement
+      const currentSelectionStart = target.selectionStart || 0;
+      const currentSelectionEnd = target.selectionEnd || 0;
+      const textLength = target.value.length;
+      const content = currentBlock?.content || '';
+      
+      // Alternative : utiliser l'API de sélection du navigateur
+      const selection = window.getSelection();
+      const selectedText = selection?.toString() || '';
+      
+      console.log('Delete debug:', {
+        currentSelectionStart,
+        currentSelectionEnd,
+        textLength,
+        content,
+        contentLength: content.length,
+        selectedText: selectedText,
+        selectedTextLength: selectedText.length
+      });
+      
+      // Vérifier différents cas de suppression de ligne
+      const isFullSelection = currentSelectionStart === 0 && currentSelectionEnd === textLength && textLength > 0;
+      const isEmptyBlock = content === '' || textLength === 0;
+      const hasLargeSelection = (currentSelectionEnd - currentSelectionStart) >= Math.max(1, textLength * 0.8); // 80% du contenu sélectionné
+      const isWholeLineSelected = currentSelectionStart === 0 && currentSelectionEnd === content.length;
+      
+      // Utiliser aussi l'API de sélection comme fallback
+      const selectedTextMatchesContent = selectedText.length > 0 && selectedText === content.trim();
+      const hasSignificantSelection = selectedText.length >= Math.max(1, content.length * 0.5); // 50% du contenu
+      
+      console.log('Delete conditions:', {
+        isFullSelection,
+        isEmptyBlock,
+        hasLargeSelection,
+        isWholeLineSelected,
+        selectedTextMatchesContent,
+        hasSignificantSelection,
+        selectionLength: currentSelectionEnd - currentSelectionStart,
+        shouldDeleteBlock: isFullSelection || isEmptyBlock || hasLargeSelection || isWholeLineSelected || selectedTextMatchesContent || hasSignificantSelection
+      });
+      
+      if (isFullSelection || isEmptyBlock || hasLargeSelection || isWholeLineSelected || selectedTextMatchesContent || hasSignificantSelection) {
+        console.log('Preventing default and handling block deletion');
+        e.preventDefault();
+        
+        // Si c'est le dernier bloc et qu'il n'est pas vide, on le vide simplement
+        if (currentIndex === blocks.length - 1 && currentBlock?.content) {
+          console.log('Clearing last block content');
+          setBlocks(prevBlocks => 
+            prevBlocks.map(block =>
+              block.id === blockId ? { ...block, content: '' } : block
+            )
+          );
+          setHasUnsavedChanges(true);
+          return;
+        }
+        
+        // Sinon, supprimer le bloc et aller au suivant ou précédent
+        if (blocks.length > 1) {
+          console.log('Deleting block and navigating to next/previous');
+          // Déterminer vers quel bloc aller
+          let targetBlockIndex: number;
+          if (currentIndex < blocks.length - 1) {
+            // Aller au bloc suivant
+            targetBlockIndex = currentIndex;
+          } else {
+            // Aller au bloc précédent si on supprime le dernier
+            targetBlockIndex = currentIndex - 1;
+          }
+          
+          const targetBlock = blocks[targetBlockIndex === currentIndex ? currentIndex + 1 : targetBlockIndex];
+          console.log('Target block for navigation:', targetBlock.id);
+          
+          // Supprimer le bloc courant
+          setBlocks(prevBlocks => prevBlocks.filter(block => block.id !== blockId));
+          setHasUnsavedChanges(true);
+          
+          // Focuser sur le bloc cible
+          setTimeout(() => {
+            const targetElement = document.querySelector(`[data-block-id="${targetBlock.id}"]`) as HTMLElement;
+            if (targetElement) {
+              targetElement.focus();
+              // Placer le curseur au début
+              if (targetElement instanceof HTMLTextAreaElement || targetElement instanceof HTMLInputElement) {
+                targetElement.setSelectionRange(0, 0);
+              }
+            }
+          }, 0);
+        }
+      }
+      // Si on est à la fin du bloc et qu'il y a un bloc suivant, fusionner
+      else if (cursorPosition === textLength && currentIndex < blocks.length - 1) {
+        e.preventDefault();
+        const nextBlock = blocks[currentIndex + 1];
+        const currentContent = currentBlock?.content || '';
+        const nextContent = nextBlock.content;
+        
+        // Mettre à jour le contenu du bloc courant avec le contenu du suivant
+        setBlocks(prevBlocks => 
+          prevBlocks
+            .map(block => 
+              block.id === blockId 
+                ? { ...block, content: currentContent + nextContent }
+                : block
+            )
+            .filter(block => block.id !== nextBlock.id)
+        );
+        setHasUnsavedChanges(true);
+        
+        // Garder le focus sur le bloc courant à la position de jonction
+        setTimeout(() => {
+          const currentElement = document.querySelector(`[data-block-id="${blockId}"]`) as HTMLElement;
+          if (currentElement && (currentElement instanceof HTMLTextAreaElement || currentElement instanceof HTMLInputElement)) {
+            currentElement.setSelectionRange(currentContent.length, currentContent.length);
           }
         }, 0);
       }
@@ -580,47 +851,91 @@ export function AdvancedNotionEditor({
         return <div className="w-full h-px bg-border my-4" />;
       case 'heading1':
         return (
-          <input
-            {...commonProps}
-            type="text"
-            className="w-full bg-transparent border-none outline-none text-3xl font-bold placeholder:text-muted-foreground"
-            defaultValue={block.content}
-            onChange={(e) => handleBlockChange(block.id, e.target.value)}
+          <TransparentRichTextEditor
+            value={block.content}
+            onChange={(newContent) => handleBlockChange(block.id, newContent)}
+            formats={block.formats || []}
+            onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
+            onKeyDown={(e) => handleKeyDown(e, block.id)}
+            onFocus={(e) => {
+              const target = e.target as HTMLInputElement | HTMLTextAreaElement;
+              const position = target.selectionStart || 0;
+              lastCursorPosition.current = {
+                blockId: block.id,
+                position,
+                content: target.value
+              };
+            }}
             placeholder="Titre 1"
+            className="w-full bg-transparent border-none outline-none text-3xl font-bold placeholder:text-muted-foreground"
+            data-block-id={block.id}
           />
         );
       case 'heading2':
         return (
-          <input
-            {...commonProps}
-            type="text"
-            className="w-full bg-transparent border-none outline-none text-2xl font-semibold placeholder:text-muted-foreground"
-            defaultValue={block.content}
-            onChange={(e) => handleBlockChange(block.id, e.target.value)}
+          <TransparentRichTextEditor
+            value={block.content}
+            onChange={(newContent) => handleBlockChange(block.id, newContent)}
+            formats={block.formats || []}
+            onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
+            onKeyDown={(e) => handleKeyDown(e, block.id)}
+            onFocus={(e) => {
+              const target = e.target as HTMLInputElement | HTMLTextAreaElement;
+              const position = target.selectionStart || 0;
+              lastCursorPosition.current = {
+                blockId: block.id,
+                position,
+                content: target.value
+              };
+            }}
             placeholder="Titre 2"
+            className="w-full bg-transparent border-none outline-none text-2xl font-semibold placeholder:text-muted-foreground"
+            data-block-id={block.id}
           />
         );
       case 'heading3':
         return (
-          <input
-            {...commonProps}
-            type="text"
-            className="w-full bg-transparent border-none outline-none text-xl font-medium placeholder:text-muted-foreground"
-            defaultValue={block.content}
-            onChange={(e) => handleBlockChange(block.id, e.target.value)}
+          <TransparentRichTextEditor
+            value={block.content}
+            onChange={(newContent) => handleBlockChange(block.id, newContent)}
+            formats={block.formats || []}
+            onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
+            onKeyDown={(e) => handleKeyDown(e, block.id)}
+            onFocus={(e) => {
+              const target = e.target as HTMLInputElement | HTMLTextAreaElement;
+              const position = target.selectionStart || 0;
+              lastCursorPosition.current = {
+                blockId: block.id,
+                position,
+                content: target.value
+              };
+            }}
             placeholder="Titre 3"
+            className="w-full bg-transparent border-none outline-none text-xl font-medium placeholder:text-muted-foreground"
+            data-block-id={block.id}
           />
         );
       case 'quote':
         return (
           <div className="border-l-4 border-muted pl-4">
-            <textarea
-              {...commonProps}
-              className="w-full bg-transparent border-none outline-none resize-none italic text-muted-foreground placeholder:text-muted-foreground"
-              defaultValue={block.content}
-              onChange={(e) => handleBlockChange(block.id, e.target.value)}
+            <TransparentRichTextEditor
+              value={block.content}
+              onChange={(newContent) => handleBlockChange(block.id, newContent)}
+              formats={block.formats || []}
+              onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
+              onKeyDown={(e) => handleKeyDown(e, block.id)}
+              onFocus={(e) => {
+                const target = e.target as HTMLInputElement | HTMLTextAreaElement;
+                const position = target.selectionStart || 0;
+                lastCursorPosition.current = {
+                  blockId: block.id,
+                  position,
+                  content: target.value
+                };
+              }}
               placeholder="Citation..."
-              rows={1}
+              className="w-full bg-transparent border-none outline-none resize-none italic text-muted-foreground placeholder:text-muted-foreground"
+              data-block-id={block.id}
             />
           </div>
         );
@@ -639,13 +954,31 @@ export function AdvancedNotionEditor({
         );
       default:
         return (
-          <textarea
-            {...commonProps}
+          <TransparentRichTextEditor
+            ref={(ref) => {
+              if (ref) {
+                blockRefs.current.set(block.id, ref);
+              } else {
+                blockRefs.current.delete(block.id);
+              }
+            }}
+            value={block.content}
+            onChange={(newContent) => handleBlockChange(block.id, newContent)}
+            formats={block.formats || []}
+            onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
+            onKeyDown={(e) => handleKeyDown(e, block.id)}
+            onFocus={(e) => {
+              const target = e.target as HTMLInputElement | HTMLTextAreaElement;
+              const position = target.selectionStart || 0;
+              lastCursorPosition.current = {
+                blockId: block.id,
+                position,
+                content: target.value
+              };
+            }}
+            onSelectionChange={onSelectionChange}
             className="w-full bg-transparent border-none outline-none resize-none placeholder:text-muted-foreground"
-            defaultValue={block.content}
-            onChange={(e) => handleBlockChange(block.id, e.target.value)}
-            placeholder=""
-            rows={1}
+            data-block-id={block.id}
           />
         );
     }
@@ -667,12 +1000,65 @@ export function AdvancedNotionEditor({
     });
   };
 
+  // Fonction pour obtenir l'éditeur actuellement focalisé
+  const getActiveEditor = useCallback((): HTMLTextAreaElement | null => {
+    const activeElement = document.activeElement;
+    if (activeElement && activeElement.tagName === 'TEXTAREA') {
+      return activeElement as HTMLTextAreaElement;
+    }
+    
+    // Si aucun textarea n'est focalisé, chercher le dernier éditeur utilisé
+    if (lastCursorPosition.current) {
+      const blockRef = blockRefs.current.get(lastCursorPosition.current.blockId);
+      if (blockRef) {
+        // Essayer d'entrer en mode édition si pas déjà actif
+        const textarea = blockRef.getTextarea();
+        if (!textarea && blockRef.enterEditMode) {
+          // Force l'entrée en mode édition pour ce bloc
+          blockRef.enterEditMode();
+          // Retourner le textarea après un délai court
+          setTimeout(() => blockRef.getTextarea(), 10);
+        }
+        return textarea;
+      }
+    }
+    
+    return null;
+  }, []);
+
   // Expose insertBlock function to parent
   useEffect(() => {
     if (onInsertBlockRequest) {
       onInsertBlockRequest(insertBlock);
     }
   }, [onInsertBlockRequest, insertBlock]);
+
+  // Expose getActiveEditor function to parent
+  useEffect(() => {
+    if (onGetActiveEditor) {
+      onGetActiveEditor(getActiveEditor);
+    }
+  }, [onGetActiveEditor, getActiveEditor]);
+
+  // Fonction de formatage qui utilise handleBlockChange
+  const formatBlockContent = useCallback((blockId: string, newContent: string) => {
+    console.log('formatBlockContent called:', { blockId, newContent });
+    handleBlockChange(blockId, newContent);
+  }, []);
+
+  // Expose format function to parent
+  useEffect(() => {
+    if (onFormatRequest) {
+      onFormatRequest(formatBlockContent);
+    }
+  }, [onFormatRequest, formatBlockContent]);
+
+  // Expose blockRefs to parent
+  useEffect(() => {
+    if (onBlockRefsRequest) {
+      onBlockRefsRequest(() => blockRefs.current);
+    }
+  }, [onBlockRefsRequest]);
 
   return (
     <div className="relative" ref={editorRef}>
