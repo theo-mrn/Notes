@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { AdvancedNotionEditor } from "@/components/editor/AdvancedNotionEditor";
 import { InsertSidebar } from "@/components/editor/InsertSidebar";
-import { EditorToolbar } from "@/components/editor/EditorToolbarSimple";
+import { EditorToolbar } from "@/components/editor/EditorToolbar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Star, Share, MoreHorizontal } from "lucide-react";
@@ -39,16 +39,40 @@ export default function NoteEditPage() {
   const [content, setContent] = useState("");
   const [insertBlockFn, setInsertBlockFn] = useState<((type: string, data?: unknown) => void) | null>(null);
   const [activeFormats, setActiveFormats] = useState<string[]>([]);
-  const [getActiveEditorFn, setGetActiveEditorFn] = useState<(() => HTMLTextAreaElement | null) | null>(null);
   const [lastSelection, setLastSelection] = useState<{
     blockId: string,
     start: number,
     end: number,
     text: string
   } | null>(null);
-  const [lastActiveBlockId, setLastActiveBlockId] = useState<string | null>(null);
-  const [formatBlockFn, setFormatBlockFn] = useState<((blockId: string, newContent: string) => void) | null>(null);
+  const [currentBlockId, setCurrentBlockId] = useState<string | null>(null);
+  const [alignBlockFn, setAlignBlockFn] = useState<((blockId: string, alignment: 'left' | 'center' | 'right') => void) | null>(null);
+  const [changeBlockTypeFn, setChangeBlockTypeFn] = useState<((blockId: string, newType: string) => void) | null>(null);
+  const [currentBlocks, setCurrentBlocks] = useState<Block[] | null>(null);
   const blockRefs = useRef<Map<string, TransparentRichTextEditorRef>>(new Map());
+  const lastFocusedElement = useRef<HTMLElement | null>(null);
+  const lastCursorPosition = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
+
+  // Fonction pour restaurer le focus automatiquement
+  const restoreEditorFocus = useCallback(() => {
+    if (lastFocusedElement.current) {
+      // Restaurer le focus avec la position du curseur
+      lastFocusedElement.current.focus();
+      if (lastFocusedElement.current instanceof HTMLTextAreaElement || lastFocusedElement.current instanceof HTMLInputElement) {
+        lastFocusedElement.current.setSelectionRange(
+          lastCursorPosition.current.start, 
+          lastCursorPosition.current.end
+        );
+      }
+    } else {
+      // Fallback : focuser sur le premier élément d'édition disponible
+      const firstEditableElement = document.querySelector('[data-block-id]') as HTMLElement;
+      if (firstEditableElement) {
+        firstEditableElement.focus();
+        lastFocusedElement.current = firstEditableElement;
+      }
+    }
+  }, []);
 
   // Fonction pour sauvegarder la sélection actuelle
   const saveCurrentSelection = useCallback(() => {
@@ -56,6 +80,13 @@ export default function NoteEditPage() {
     if (activeElement && (activeElement.tagName === 'TEXTAREA' || activeElement.tagName === 'INPUT')) {
       const blockId = activeElement.getAttribute('data-block-id');
       if (blockId) {
+        // Sauvegarder l'élément et la position du curseur pour le système de focus
+        lastFocusedElement.current = activeElement;
+        lastCursorPosition.current = {
+          start: activeElement.selectionStart || 0,
+          end: activeElement.selectionEnd || 0
+        };
+        
         const selection = {
           blockId,
           start: activeElement.selectionStart || 0,
@@ -63,14 +94,14 @@ export default function NoteEditPage() {
           text: activeElement.value
         };
         setLastSelection(selection);
-        setLastActiveBlockId(blockId);
+        setCurrentBlockId(blockId);
         return selection;
       }
     }
     return null;
   }, []);
 
-  // Fonction pour détecter les formats actifs dans le texte
+  // Fonction pour détecter les formats actifs dans le texte et l'alignement du bloc
   const updateActiveFormats = useCallback(() => {
     const activeElement = document.activeElement as HTMLTextAreaElement | HTMLInputElement;
     if (!activeElement || (activeElement.tagName !== 'TEXTAREA' && activeElement.tagName !== 'INPUT')) {
@@ -152,9 +183,9 @@ export default function NoteEditPage() {
           (end > format.start && end <= format.end) ||
           (start <= format.start && end >= format.end)) {
         // Mapper les types de format pour correspondre aux noms de la toolbar
-        let formatName = format.type;
+        let formatName: string = format.type;
         if (format.type === 'code') {
-          formatName = 'inlineCode';
+          formatName = 'inlineCode'; // Map to toolbar format name
         }
         if (!formats.includes(formatName)) {
           formats.push(formatName);
@@ -163,8 +194,26 @@ export default function NoteEditPage() {
     }
 
     console.log('Active formats detected from structured data:', formats, { start, end, blockFormats });
+    
+    // Détecter l'alignement et le type du bloc actuel
+    const blocksToUse = currentBlocks || note?.blocks;
+    if (blockId && blocksToUse) {
+      const currentBlock = blocksToUse.find(block => block.id === blockId);
+      if (currentBlock?.alignment) {
+        formats.push(`align-${currentBlock.alignment}`);
+      } else {
+        // Alignement par défaut
+        formats.push('align-left');
+      }
+      
+      // Ajouter le type de bloc s'il s'agit d'une liste
+      if (currentBlock?.type === 'bulletList' || currentBlock?.type === 'numberedList') {
+        formats.push(currentBlock.type);
+      }
+    }
+    
     setActiveFormats(formats);
-  }, [saveCurrentSelection]);
+  }, [saveCurrentSelection, note?.blocks, currentBlocks]);
 
   const fetchNote = useCallback(async () => {
     try {
@@ -251,6 +300,27 @@ export default function NoteEditPage() {
   const handleFormat = useCallback((format: string, value?: unknown) => {
     console.log('Format:', format, value);
     
+    // Gérer l'alignement (format de bloc)
+    if (format === 'align') {
+      const alignment = value as 'left' | 'center' | 'right';
+      if (alignBlockFn && currentBlockId) {
+        alignBlockFn(currentBlockId, alignment);
+        return;
+      }
+      console.warn('Pas de fonction d\'alignement ou de bloc actif');
+      return;
+    }
+    
+    // Gérer les changements de type de bloc (listes)
+    if (format === 'bulletList' || format === 'numberedList') {
+      if (changeBlockTypeFn && currentBlockId) {
+        changeBlockTypeFn(currentBlockId, format);
+        return;
+      }
+      console.warn('Pas de fonction de changement de type de bloc ou de bloc actif');
+      return;
+    }
+    
     // Sauvegarder la sélection actuelle avant de perdre le focus
     const currentSelection = saveCurrentSelection();
     
@@ -291,7 +361,7 @@ export default function NoteEditPage() {
     } else {
       console.warn('Block ref not found or applyFormat method not available');
     }
-  }, [saveCurrentSelection, lastSelection, blockRefs]);
+  }, [saveCurrentSelection, lastSelection, blockRefs, alignBlockFn, currentBlockId, changeBlockTypeFn]);
 
   const handleTogglePinned = () => {
     if (note) {
@@ -313,17 +383,92 @@ export default function NoteEditPage() {
     setInsertBlockFn(() => insertFn);
   };
 
-  const handleGetActiveEditorRequest = (getFn: () => HTMLTextAreaElement | null) => {
-    setGetActiveEditorFn(() => getFn);
-  };
-
-  const handleFormatRequest = (formatFn: (blockId: string, newContent: string) => void) => {
-    setFormatBlockFn(() => formatFn);
-  };
 
   const handleBlockRefsRequest = (getBlockRefsFn: () => Map<string, TransparentRichTextEditorRef>) => {
     blockRefs.current = getBlockRefsFn();
   };
+
+  const handleBlockAlignmentRequest = (alignFn: (blockId: string, alignment: 'left' | 'center' | 'right') => void) => {
+    setAlignBlockFn(() => alignFn);
+  };
+
+  const handleBlockTypeChangeRequest = (changeTypeFn: (blockId: string, newType: string) => void) => {
+    setChangeBlockTypeFn(() => changeTypeFn);
+  };
+
+  const handleCurrentBlocksUpdate = (blocks: Block[]) => {
+    setCurrentBlocks(blocks);
+  };
+
+  // Système de maintien du focus sur l'éditeur
+  useEffect(() => {
+    let focusTimer: NodeJS.Timeout;
+    
+    const handleFocusOut = (e: FocusEvent) => {
+      const target = e.target as HTMLElement;
+      const relatedTarget = e.relatedTarget as HTMLElement;
+      
+      // Si le focus va vers un élément d'édition, ne rien faire
+      if (relatedTarget && relatedTarget.hasAttribute('data-block-id')) {
+        return;
+      }
+      
+      // Si le focus va vers certains éléments spécifiques (comme les boutons de toolbar), programmer la restauration
+      if (relatedTarget && (
+        relatedTarget.closest('.editor-toolbar') ||
+        relatedTarget.closest('button') ||
+        relatedTarget.closest('nav') ||
+        relatedTarget.closest('header')
+      )) {
+        // Délai court pour permettre l'action (comme le clic sur un bouton)
+        focusTimer = setTimeout(() => {
+          restoreEditorFocus();
+        }, 100);
+      }
+    };
+
+    const handleFocusIn = (e: FocusEvent) => {
+      const target = e.target as HTMLElement;
+      
+      // Si le focus revient sur un élément d'édition, annuler la restauration programmée
+      if (target && target.hasAttribute('data-block-id')) {
+        if (focusTimer) {
+          clearTimeout(focusTimer);
+        }
+      }
+    };
+
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      
+      // Si on clique sur la navbar, un bouton, etc., restaurer le focus après l'action
+      if (target && (
+        target.closest('nav') ||
+        target.closest('header') ||
+        target.closest('.editor-toolbar') ||
+        (target.tagName === 'BUTTON' && !target.closest('[data-block-id]'))
+      )) {
+        setTimeout(() => {
+          // Vérifier si on n'est pas déjà dans un élément d'édition
+          const currentActive = document.activeElement as HTMLElement;
+          if (!currentActive || !currentActive.hasAttribute('data-block-id')) {
+            restoreEditorFocus();
+          }
+        }, 50);
+      }
+    };
+
+    document.addEventListener('focusout', handleFocusOut);
+    document.addEventListener('focusin', handleFocusIn);
+    document.addEventListener('click', handleClick);
+
+    return () => {
+      if (focusTimer) clearTimeout(focusTimer);
+      document.removeEventListener('focusout', handleFocusOut);
+      document.removeEventListener('focusin', handleFocusIn);
+      document.removeEventListener('click', handleClick);
+    };
+  }, [restoreEditorFocus]);
 
   // Gestionnaire de raccourcis clavier global
   useEffect(() => {
@@ -394,6 +539,15 @@ export default function NoteEditPage() {
     
     return () => clearTimeout(timer);
   }, [updateActiveFormats]);
+
+  // Initialiser le focus sur l'éditeur au chargement
+  useEffect(() => {
+    if (!loading && note) {
+      setTimeout(() => {
+        restoreEditorFocus();
+      }, 200);
+    }
+  }, [loading, note, restoreEditorFocus]);
 
   if (!session) {
     return (
@@ -506,9 +660,10 @@ export default function NoteEditPage() {
                 onSave={handleSave}
                 placeholder=""
                 onInsertBlockRequest={handleInsertBlockRequest}
-                onGetActiveEditor={handleGetActiveEditorRequest}
-                onFormatRequest={handleFormatRequest}
                 onBlockRefsRequest={handleBlockRefsRequest}
+                onBlockAlignmentRequest={handleBlockAlignmentRequest}
+                onBlockTypeChangeRequest={handleBlockTypeChangeRequest}
+                onCurrentBlocksUpdate={handleCurrentBlocksUpdate}
                 onSelectionChange={updateActiveFormats}
               />
             </div>

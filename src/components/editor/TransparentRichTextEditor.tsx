@@ -367,10 +367,6 @@ export const TransparentRichTextEditor = forwardRef<TransparentRichTextEditorRef
         format !== null && format.start < format.end && format.end <= newValue.length
       );
       
-      console.log('Formats after adjustment:', {
-        formatsAfter: adjustedFormats.length,
-        formats: adjustedFormats
-      });
       
       setLocalFormats(adjustedFormats);
       if (onFormatsChange) {

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { 
   Table,
-  Image,
+  ImagePlus,
   Calendar,
   CheckSquare,
   FileText,
@@ -106,7 +106,7 @@ export function InsertSidebar({ onInsertBlock, allowedBlocks }: InsertSidebarPro
       id: 'image',
       name: 'Image',
       description: 'Upload ou URL',
-      icon: <Image className="h-5 w-5" />,
+      icon: <ImagePlus className="h-5 w-5" />,
       category: 'media'
     },
     {

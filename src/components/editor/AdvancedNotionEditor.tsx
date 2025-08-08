@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { toast } from "sonner";
-import { GripVertical, Trash2, Copy, ArrowUp, ArrowDown } from 'lucide-react';
+import { GripVertical } from 'lucide-react';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { TableBlock } from './blocks/TableBlock';
 import { ImageBlock } from './blocks/ImageBlock';
@@ -11,12 +11,50 @@ import { CalendarBlock } from './blocks/CalendarBlock';
 import { TodoBlock } from './blocks/TodoBlock';
 import { TransparentRichTextEditor, type TransparentRichTextEditorRef, type TextFormat } from './TransparentRichTextEditor';
 
+interface TableData {
+  rows: string[][];
+  headers: boolean;
+  alignment: ('left' | 'center' | 'right')[];
+}
+
+interface ImageData {
+  src: string;
+  alt: string;
+  caption: string;
+  alignment: 'left' | 'center' | 'right';
+  size: 'small' | 'medium' | 'large' | 'full';
+}
+
+interface CalendarData {
+  events: Array<{
+    id: string;
+    title: string;
+    date: Date;
+    color?: string;
+  }>;
+  view: 'month' | 'week' | 'agenda';
+  currentDate: Date;
+}
+
+interface TodoData {
+  items: Array<{
+    id: string;
+    text: string;
+    completed: boolean;
+    createdAt: Date;
+  }>;
+  title: string;
+}
+
+type BlockData = TableData | ImageData | CalendarData | TodoData | undefined;
+
 export interface Block {
   id: string;
   type: 'paragraph' | 'heading1' | 'heading2' | 'heading3' | 'bulletList' | 'numberedList' | 'quote' | 'code' | 'divider' | 'table' | 'image' | 'calendar' | 'todoList';
   content: string;
-  data?: any;
+  data?: unknown;
   formats?: TextFormat[];
+  alignment?: 'left' | 'center' | 'right';
 }
 
 interface AdvancedNotionEditorProps {
@@ -27,66 +65,60 @@ interface AdvancedNotionEditorProps {
   placeholder?: string;
   autoSave?: boolean;
   saveInterval?: number;
-  onInsertBlockRequest?: (insertFn: (type: string, data?: any) => void) => void;
-  onGetActiveEditor?: (getFn: () => HTMLTextAreaElement | null) => void;
-  onFormatRequest?: (formatFn: (blockId: string, newContent: string) => void) => void;
+  onInsertBlockRequest?: (insertFn: (type: string, data?: unknown) => void) => void;
   onBlockRefsRequest?: (getBlockRefsFn: () => Map<string, TransparentRichTextEditorRef>) => void;
   onSelectionChange?: () => void;
+  onBlockAlignmentRequest?: (alignBlockFn: (blockId: string, alignment: 'left' | 'center' | 'right') => void) => void;
+  onBlockTypeChangeRequest?: (changeBlockTypeFn: (blockId: string, newType: string) => void) => void;
+  onCurrentBlocksUpdate?: (blocks: Block[]) => void;
 }
 
 export function AdvancedNotionEditor({ 
   content, 
   blocks: initialBlocks, 
-  onChange, 
   onSave, 
-  placeholder, 
   autoSave = true, 
   saveInterval = 5000,
   onInsertBlockRequest,
-  onGetActiveEditor,
-  onFormatRequest,
   onBlockRefsRequest,
-  onSelectionChange
+  onSelectionChange,
+  onBlockAlignmentRequest,
+  onBlockTypeChangeRequest,
+  onCurrentBlocksUpdate
 }: AdvancedNotionEditorProps) {
   const [blocks, setBlocks] = useState<Block[]>(() => {
-    console.log('Initialisation des blocs:', { initialBlocks, content });
-    
     if (initialBlocks && initialBlocks.length > 0) {
-      console.log('Utilisation des blocs initiaux:', initialBlocks);
       // Désérialiser les dates si nécessaire
       const deserializedBlocks = initialBlocks.map(block => ({
         ...block,
         data: block.data ? {
           ...block.data,
           // Reconvertir les strings en dates pour les blocs qui en ont besoin
-          ...(block.type === 'calendar' && block.data.currentDate 
-            ? { currentDate: new Date(block.data.currentDate) } 
+          ...(block.type === 'calendar' && typeof block.data === 'object' && block.data !== null && 'currentDate' in block.data
+            ? { currentDate: new Date(block.data.currentDate as string) } 
             : {}),
-          ...(block.type === 'calendar' && block.data.events 
+          ...(block.type === 'calendar' && typeof block.data === 'object' && block.data !== null && 'events' in block.data && Array.isArray(block.data.events)
             ? { 
-                events: block.data.events.map((event: any) => ({
-                  ...event,
-                  date: new Date(event.date)
+                events: block.data.events.map((event: unknown) => ({
+                  ...(event as object),
+                  date: new Date((event as { date: string }).date)
                 }))
               } 
             : {}),
-          ...(block.type === 'todoList' && block.data.items 
+          ...(block.type === 'todoList' && typeof block.data === 'object' && block.data !== null && 'items' in block.data && Array.isArray(block.data.items)
             ? { 
-                items: block.data.items.map((item: any) => ({
-                  ...item,
-                  createdAt: new Date(item.createdAt)
+                items: block.data.items.map((item: unknown) => ({
+                  ...(item as object),
+                  createdAt: new Date((item as { createdAt: string }).createdAt)
                 }))
               } 
             : {})
         } : undefined
       }));
-      console.log('Blocs désérialisés:', deserializedBlocks);
       return deserializedBlocks;
     }
     
-    const defaultBlocks = [{ id: '1', type: 'paragraph', content: content || '' }];
-    console.log('Utilisation des blocs par défaut:', defaultBlocks);
-    return defaultBlocks as Block[];
+    return [{ id: '1', type: 'paragraph', content: content || '' }] as Block[];
   });
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -97,11 +129,46 @@ export function AdvancedNotionEditor({
   const lastCursorPosition = useRef<{blockId: string, position: number, content: string} | null>(null);
   const blockRefs = useRef<Map<string, TransparentRichTextEditorRef>>(new Map());
 
+  const handleSave = useCallback(async () => {
+    if (isSaving) return;
+    
+    const currentContent = blocks.map(block => 
+      block.type === 'paragraph' ? block.content : `[${block.type}]${block.content}`
+    ).join('\n');
+    if (currentContent === lastContent) {
+      return;
+    }
+    
+    setIsSaving(true);
+    try {
+      // Sérialiser les blocs pour la sauvegarde (convertir les dates en strings)
+      const serializedBlocks = blocks.map(block => ({
+        ...block,
+        data: block.data ? JSON.parse(JSON.stringify(block.data)) : undefined
+      }));
+      
+      // Sauvegarder avec les blocs structurés
+      onSave(serializedBlocks);
+      setLastSaved(new Date());
+      setHasUnsavedChanges(false);
+      setLastContent(currentContent);
+      
+      if (!autoSave) {
+        toast.success("Note sauvegardée");
+      }
+    } catch (error) {
+      console.error('Erreur lors de la sauvegarde:', error);
+      toast.error("Erreur lors de la sauvegarde");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [isSaving, blocks, lastContent, onSave, autoSave]);
+
   useEffect(() => {
     if (content && blocks.length === 1 && !blocks[0].content) {
       setBlocks([{ id: '1', type: 'paragraph', content }]);
     }
-  }, [content]);
+  }, [content, blocks]);
 
   // Auto-save effect
   useEffect(() => {
@@ -127,7 +194,7 @@ export function AdvancedNotionEditor({
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [hasUnsavedChanges, autoSave, saveInterval, isSaving, blocks]);
+  }, [hasUnsavedChanges, autoSave, saveInterval, isSaving, blocks, handleSave]);
 
   useEffect(() => {
     return () => {
@@ -137,40 +204,6 @@ export function AdvancedNotionEditor({
     };
   }, []);
 
-  const handleSave = async () => {
-    if (isSaving) return;
-    
-    const currentContent = blocks.map(block => 
-      block.type === 'paragraph' ? block.content : `[${block.type}]${block.content}`
-    ).join('\n');
-    if (currentContent === lastContent) {
-      return;
-    }
-    
-    setIsSaving(true);
-    try {
-      // Sérialiser les blocs pour la sauvegarde (convertir les dates en strings)
-      const serializedBlocks = blocks.map(block => ({
-        ...block,
-        data: block.data ? JSON.parse(JSON.stringify(block.data)) : undefined
-      }));
-      
-      // Sauvegarder avec les blocs structurés
-      await onSave(serializedBlocks);
-      setLastSaved(new Date());
-      setHasUnsavedChanges(false);
-      setLastContent(currentContent);
-      
-      if (!autoSave) {
-        toast.success("Note sauvegardée");
-      }
-    } catch (error) {
-      console.error('Erreur lors de la sauvegarde:', error);
-      toast.error("Erreur lors de la sauvegarde");
-    } finally {
-      setIsSaving(false);
-    }
-  };
 
   // Fonction simple pour changer un bloc
   const handleBlockChange = (blockId: string, newContent: string) => {
@@ -192,7 +225,77 @@ export function AdvancedNotionEditor({
     setHasUnsavedChanges(true);
   };
 
-  const handleBlockUpdate = (blockId: string, data: any) => {
+  // Fonction pour gérer l'alignement des blocs
+  const handleBlockAlignment = useCallback((blockId: string, alignment: 'left' | 'center' | 'right') => {
+    // Sauvegarder la position du curseur avant le changement
+    const currentElement = document.querySelector(`[data-block-id="${blockId}"]`) as HTMLTextAreaElement | HTMLInputElement;
+    const cursorPosition = currentElement ? {
+      start: currentElement.selectionStart || 0,
+      end: currentElement.selectionEnd || 0
+    } : { start: 0, end: 0 };
+
+    setBlocks(prevBlocks =>
+      prevBlocks.map(block =>
+        block.id === blockId ? { ...block, alignment } : block
+      )
+    );
+    setHasUnsavedChanges(true);
+
+    // Restaurer le focus et la position du curseur après le re-render
+    setTimeout(() => {
+      const newElement = document.querySelector(`[data-block-id="${blockId}"]`) as HTMLTextAreaElement | HTMLInputElement;
+      if (newElement) {
+        newElement.focus();
+        if (newElement.setSelectionRange) {
+          newElement.setSelectionRange(cursorPosition.start, cursorPosition.end);
+        }
+        
+        // Déclencher la détection des formats pour mettre à jour la toolbar
+        if (onSelectionChange) {
+          setTimeout(() => {
+            onSelectionChange();
+          }, 10);
+        }
+      }
+    }, 0);
+  }, [onSelectionChange]);
+
+  // Fonction pour gérer le changement de type des blocs
+  const handleBlockTypeChange = useCallback((blockId: string, newType: string) => {
+    // Sauvegarder la position du curseur avant le changement
+    const currentElement = document.querySelector(`[data-block-id="${blockId}"]`) as HTMLTextAreaElement | HTMLInputElement;
+    const cursorPosition = currentElement ? {
+      start: currentElement.selectionStart || 0,
+      end: currentElement.selectionEnd || 0
+    } : { start: 0, end: 0 };
+
+    setBlocks(prevBlocks =>
+      prevBlocks.map(block =>
+        block.id === blockId ? { ...block, type: newType as Block['type'] } : block
+      )
+    );
+    setHasUnsavedChanges(true);
+
+    // Restaurer le focus et la position du curseur après le re-render
+    setTimeout(() => {
+      const newElement = document.querySelector(`[data-block-id="${blockId}"]`) as HTMLTextAreaElement | HTMLInputElement;
+      if (newElement) {
+        newElement.focus();
+        if (newElement.setSelectionRange) {
+          newElement.setSelectionRange(cursorPosition.start, cursorPosition.end);
+        }
+        
+        // Déclencher la détection des formats pour mettre à jour la toolbar
+        if (onSelectionChange) {
+          setTimeout(() => {
+            onSelectionChange();
+          }, 10);
+        }
+      }
+    }, 0);
+  }, [onSelectionChange]);
+
+  const handleBlockUpdate = (blockId: string, data: unknown) => {
     setBlocks(prevBlocks =>
       prevBlocks.map(block =>
         block.id === blockId ? { ...block, data } : block
@@ -201,41 +304,17 @@ export function AdvancedNotionEditor({
     setHasUnsavedChanges(true);
   };
 
-  const addNewBlock = (afterBlockId: string, type: Block['type'] = 'paragraph') => {
-    const newBlock: Block = {
-      id: Date.now().toString(),
-      type,
-      content: '',
-      data: getDefaultDataForType(type)
-    };
 
-    setBlocks(prevBlocks => {
-      const index = prevBlocks.findIndex(block => block.id === afterBlockId);
-      const newBlocks = [...prevBlocks];
-      newBlocks.splice(index + 1, 0, newBlock);
-      return newBlocks;
-    });
-
-    setTimeout(() => {
-      const newBlockElement = document.querySelector(`[data-block-id="${newBlock.id}"]`) as HTMLElement;
-      if (newBlockElement) {
-        newBlockElement.focus();
-      }
-    }, 0);
-  };
-
-  const insertBlock = useCallback((type: string, data?: any) => {
-    console.log('Insertion de bloc dans l\'éditeur:', type, data);
-    console.log('Position sauvegardée du curseur:', lastCursorPosition.current);
+  const insertBlock = useCallback((type: string, data?: unknown) => {
     
-    const getDefaultData = (blockType: Block['type']) => {
+    const getDefaultData = (blockType: Block['type']): BlockData => {
       switch (blockType) {
         case 'table':
           return {
             rows: [['', ''], ['', '']],
             headers: false,
-            alignment: ['left', 'left']
-          };
+            alignment: ['left', 'left'] as ('left' | 'center' | 'right')[]
+          } as TableData;
         case 'image':
           return {
             src: '',
@@ -243,18 +322,18 @@ export function AdvancedNotionEditor({
             caption: '',
             alignment: 'center',
             size: 'medium'
-          };
+          } as ImageData;
         case 'calendar':
           return {
             events: [],
-            view: 'month',
+            view: 'month' as const,
             currentDate: new Date()
-          };
+          } as CalendarData;
         case 'todoList':
           return {
             items: [],
             title: 'Liste de tâches'
-          };
+          } as TodoData;
         default:
           return undefined;
       }
@@ -272,14 +351,11 @@ export function AdvancedNotionEditor({
 
     setBlocks(currentBlocks => {
       if (!cursorInfo) {
-        // Pas de position sauvegardée, ajouter à la fin
-        console.log('Pas de position sauvegardée, ajout à la fin');
         return [...currentBlocks, newBlock];
       }
 
       const targetIndex = currentBlocks.findIndex(block => block.id === cursorInfo.blockId);
       if (targetIndex === -1) {
-        console.log('Bloc cible non trouvé, ajout à la fin');
         return [...currentBlocks, newBlock];
       }
 
@@ -287,14 +363,10 @@ export function AdvancedNotionEditor({
       const newBlocks = [...currentBlocks];
       const { position, content } = cursorInfo;
 
-      console.log('Insertion avec position:', { targetIndex, position, content });
-
       // Si le curseur est au milieu du texte, diviser
       if (position > 0 && position < content.length) {
         const beforeText = content.substring(0, position);
         const afterText = content.substring(position);
-
-        console.log('Division du bloc:', { beforeText, afterText });
 
         // Modifier le bloc actuel
         newBlocks[targetIndex] = { ...targetBlock, content: beforeText };
@@ -311,7 +383,6 @@ export function AdvancedNotionEditor({
       } else {
         // Insertion simple
         const insertAt = position === 0 ? targetIndex : targetIndex + 1;
-        console.log('Insertion simple à l\'index:', insertAt);
         newBlocks.splice(insertAt, 0, newBlock);
       }
 
@@ -334,74 +405,40 @@ export function AdvancedNotionEditor({
     setHasUnsavedChanges(true);
   };
 
-  const duplicateBlock = (blockId: string) => {
-    const blockToDuplicate = blocks.find(block => block.id === blockId);
-    if (!blockToDuplicate) return;
 
-    const duplicatedBlock: Block = {
-      ...blockToDuplicate,
-      id: Date.now().toString()
-    };
-
-    const originalIndex = blocks.findIndex(block => block.id === blockId);
-    setBlocks(prevBlocks => {
-      const newBlocks = [...prevBlocks];
-      newBlocks.splice(originalIndex + 1, 0, duplicatedBlock);
-      return newBlocks;
-    });
-    setHasUnsavedChanges(true);
-  };
-
-  const moveBlock = (blockId: string, direction: 'up' | 'down') => {
-    const currentIndex = blocks.findIndex(block => block.id === blockId);
-    if (currentIndex === -1) return;
-
-    const newIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
-    if (newIndex < 0 || newIndex >= blocks.length) return;
-
-    setBlocks(prevBlocks => {
-      const newBlocks = [...prevBlocks];
-      const [movedBlock] = newBlocks.splice(currentIndex, 1);
-      newBlocks.splice(newIndex, 0, movedBlock);
-      return newBlocks;
-    });
-    setHasUnsavedChanges(true);
-  };
-
-  const getDefaultDataForType = (type: Block['type']) => {
+  const getDefaultDataForType = (type: Block['type']): BlockData => {
     switch (type) {
       case 'table':
         return {
           rows: [['', ''], ['', '']],
           headers: false,
-          alignment: ['left', 'left']
-        };
+          alignment: ['left', 'left'] as ('left' | 'center' | 'right')[]
+        } as TableData;
       case 'image':
         return {
           src: '',
           alt: '',
           caption: '',
-          alignment: 'center',
-          size: 'medium'
-        };
+          alignment: 'center' as const,
+          size: 'medium' as const
+        } as ImageData;
       case 'calendar':
         return {
           events: [],
-          view: 'month',
+          view: 'month' as const,
           currentDate: new Date()
-        };
+        } as CalendarData;
       case 'todoList':
         return {
           items: [],
           title: 'Liste de tâches'
-        };
+        } as TodoData;
       default:
         return undefined;
     }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent, blockId: string) => {
-    console.log('handleKeyDown called:', e.key, 'blockId:', blockId);
     const currentBlock = blocks.find(block => block.id === blockId);
     const currentIndex = blocks.findIndex(block => block.id === blockId);
     
@@ -413,31 +450,53 @@ export function AdvancedNotionEditor({
       const cursorPosition = target.selectionStart || 0;
       const currentContent = currentBlock?.content || '';
       
-      console.log('Enter pressed at position:', cursorPosition, 'in content:', currentContent);
-      
       // Diviser le contenu au point du curseur
       const beforeCursor = currentContent.substring(0, cursorPosition);
       const afterCursor = currentContent.substring(cursorPosition);
       
-      console.log('Split content:', { beforeCursor, afterCursor });
+      // Logique pour les listes :
+      // - Si on est dans un élément de liste vide, on sort de la liste (paragraphe)
+      // - Sinon, on continue la liste avec le même type
+      let newBlockType: Block['type'] = 'paragraph';
+      let shouldExitList = false;
+      
+      if (currentBlock?.type === 'bulletList' || currentBlock?.type === 'numberedList') {
+        const isEmptyListItem = currentContent.trim() === '';
+        
+        if (isEmptyListItem) {
+          // Liste vide - sortir de la liste et convertir l'élément actuel en paragraphe
+          shouldExitList = true;
+          newBlockType = 'paragraph';
+        } else {
+          // Continuer avec le même type de liste
+          newBlockType = currentBlock.type;
+        }
+      }
       
       // Créer un nouveau bloc avec le texte après le curseur
       const newBlock: Block = {
         id: Date.now().toString(),
-        type: 'paragraph',
+        type: newBlockType,
         content: afterCursor,
         data: undefined
       };
       
-      // Faire les deux opérations en une seule fois :
-      // 1. Mettre à jour le bloc actuel avec le texte avant le curseur
-      // 2. Insérer le nouveau bloc après
+      // Faire les opérations appropriées selon le contexte
       setBlocks(prevBlocks => {
         const index = prevBlocks.findIndex(block => block.id === blockId);
         const newBlocks = [...prevBlocks];
         
-        // Mettre à jour le contenu du bloc actuel
-        newBlocks[index] = { ...newBlocks[index], content: beforeCursor };
+        if (shouldExitList) {
+          // Convertir l'élément de liste actuel en paragraphe et créer un nouveau paragraphe
+          newBlocks[index] = { 
+            ...newBlocks[index], 
+            type: 'paragraph', 
+            content: beforeCursor 
+          };
+        } else {
+          // Comportement normal : mettre à jour le contenu du bloc actuel
+          newBlocks[index] = { ...newBlocks[index], content: beforeCursor };
+        }
         
         // Insérer le nouveau bloc après
         newBlocks.splice(index + 1, 0, newBlock);
@@ -461,10 +520,7 @@ export function AdvancedNotionEditor({
     } else if (e.key === '/' && currentBlock?.content === '') {
       // Raccourci pour ouvrir le menu d'insertion
       e.preventDefault();
-      console.log('Ouverture du menu d\'insertion pour le bloc:', blockId);
-      // TODO: Ouvrir un menu contextuel d'insertion
     } else if (e.key === 'Backspace') {
-      console.log('Backspace key pressed!');
       const target = e.target as HTMLTextAreaElement | HTMLInputElement;
       
       // Capturer la sélection actuelle AVANT modification
@@ -477,38 +533,17 @@ export function AdvancedNotionEditor({
       const selection = window.getSelection();
       const selectedText = selection?.toString() || '';
       
-      console.log('Backspace debug:', {
-        currentSelectionStart,
-        currentSelectionEnd,
-        textLength,
-        content,
-        contentLength: content.length,
-        selectedText: selectedText,
-        selectedTextLength: selectedText.length
-      });
-      
       // Vérifier si on a une sélection importante (pas juste le curseur)
-      const hasSelection = currentSelectionEnd > currentSelectionStart;
       const hasLargeSelection = (currentSelectionEnd - currentSelectionStart) >= Math.max(1, textLength * 0.5);
       const isFullSelection = currentSelectionStart === 0 && currentSelectionEnd === textLength && textLength > 0;
       const selectedTextMatchesContent = selectedText.length > 0 && selectedText === content.trim();
       
-      console.log('Backspace selection conditions:', {
-        hasSelection,
-        hasLargeSelection,
-        isFullSelection,
-        selectedTextMatchesContent,
-        shouldDeleteBlock: isFullSelection || hasLargeSelection || selectedTextMatchesContent
-      });
-      
       // Si on a une sélection importante, traiter comme une suppression de bloc
       if (isFullSelection || hasLargeSelection || selectedTextMatchesContent) {
-        console.log('Large selection detected, handling as block deletion');
         e.preventDefault();
         
         // Si c'est le dernier bloc et qu'il n'est pas vide, on le vide simplement
         if (currentIndex === blocks.length - 1 && currentBlock?.content) {
-          console.log('Clearing last block content');
           setBlocks(prevBlocks => 
             prevBlocks.map(block =>
               block.id === blockId ? { ...block, content: '' } : block
@@ -520,7 +555,6 @@ export function AdvancedNotionEditor({
         
         // Sinon, supprimer le bloc et aller au précédent
         if (blocks.length > 1 && currentIndex > 0) {
-          console.log('Deleting block and navigating to previous');
           const previousBlock = blocks[currentIndex - 1];
           const previousBlockContent = previousBlock.content;
           
@@ -544,12 +578,35 @@ export function AdvancedNotionEditor({
       }
       
       // Logique normale de Backspace (pour curseur ou petites sélections)
-      const cursorPosition = currentSelectionStart;
       
-      if (cursorPosition === 0 && currentBlock?.content === '') {
-        // Supprimer le bloc vide et revenir au précédent
+      if (currentSelectionStart === 0 && currentBlock?.content === '') {
+        e.preventDefault();
+        
+        // Si on est dans une liste, d'abord convertir en paragraphe (sans perdre le focus)
+        if (currentBlock?.type === 'bulletList' || currentBlock?.type === 'numberedList') {
+          setBlocks(prevBlocks => 
+            prevBlocks.map(block =>
+              block.id === blockId ? { ...block, type: 'paragraph' } : block
+            )
+          );
+          setHasUnsavedChanges(true);
+          
+          // Garder le focus sur l'élément actuel
+          setTimeout(() => {
+            const currentElement = document.querySelector(`[data-block-id="${blockId}"]`) as HTMLElement;
+            if (currentElement) {
+              currentElement.focus();
+              // Garder le curseur au début
+              if (currentElement instanceof HTMLTextAreaElement || currentElement instanceof HTMLInputElement) {
+                currentElement.setSelectionRange(0, 0);
+              }
+            }
+          }, 0);
+          return; // S'arrêter ici, ne pas supprimer le bloc
+        }
+        
+        // Si c'est déjà un paragraphe vide, alors supprimer le bloc et revenir au précédent
         if (blocks.length > 1 && currentIndex > 0) {
-          e.preventDefault();
           const previousBlock = blocks[currentIndex - 1];
           const previousBlockContent = previousBlock.content;
           
@@ -569,7 +626,7 @@ export function AdvancedNotionEditor({
             }
           }, 0);
         }
-      } else if (cursorPosition === 0 && currentBlock?.content && currentIndex > 0) {
+      } else if (currentSelectionStart === 0 && currentBlock?.content && currentIndex > 0) {
         // Fusionner avec le bloc précédent
         e.preventDefault();
         const previousBlock = blocks[currentIndex - 1];
@@ -601,7 +658,6 @@ export function AdvancedNotionEditor({
         }, 0);
       }
     } else if (e.key === 'Delete') {
-      console.log('Delete key pressed!');
       const target = e.target as HTMLTextAreaElement | HTMLInputElement;
       
       // Utiliser la sélection actuelle AVANT qu'elle ne soit modifiée par l'événement
@@ -614,44 +670,21 @@ export function AdvancedNotionEditor({
       const selection = window.getSelection();
       const selectedText = selection?.toString() || '';
       
-      console.log('Delete debug:', {
-        currentSelectionStart,
-        currentSelectionEnd,
-        textLength,
-        content,
-        contentLength: content.length,
-        selectedText: selectedText,
-        selectedTextLength: selectedText.length
-      });
-      
       // Vérifier différents cas de suppression de ligne
       const isFullSelection = currentSelectionStart === 0 && currentSelectionEnd === textLength && textLength > 0;
       const isEmptyBlock = content === '' || textLength === 0;
-      const hasLargeSelection = (currentSelectionEnd - currentSelectionStart) >= Math.max(1, textLength * 0.8); // 80% du contenu sélectionné
+      const hasLargeSelection = (currentSelectionEnd - currentSelectionStart) >= Math.max(1, textLength * 0.8);
       const isWholeLineSelected = currentSelectionStart === 0 && currentSelectionEnd === content.length;
       
       // Utiliser aussi l'API de sélection comme fallback
       const selectedTextMatchesContent = selectedText.length > 0 && selectedText === content.trim();
-      const hasSignificantSelection = selectedText.length >= Math.max(1, content.length * 0.5); // 50% du contenu
-      
-      console.log('Delete conditions:', {
-        isFullSelection,
-        isEmptyBlock,
-        hasLargeSelection,
-        isWholeLineSelected,
-        selectedTextMatchesContent,
-        hasSignificantSelection,
-        selectionLength: currentSelectionEnd - currentSelectionStart,
-        shouldDeleteBlock: isFullSelection || isEmptyBlock || hasLargeSelection || isWholeLineSelected || selectedTextMatchesContent || hasSignificantSelection
-      });
+      const hasSignificantSelection = selectedText.length >= Math.max(1, content.length * 0.5);
       
       if (isFullSelection || isEmptyBlock || hasLargeSelection || isWholeLineSelected || selectedTextMatchesContent || hasSignificantSelection) {
-        console.log('Preventing default and handling block deletion');
         e.preventDefault();
         
         // Si c'est le dernier bloc et qu'il n'est pas vide, on le vide simplement
         if (currentIndex === blocks.length - 1 && currentBlock?.content) {
-          console.log('Clearing last block content');
           setBlocks(prevBlocks => 
             prevBlocks.map(block =>
               block.id === blockId ? { ...block, content: '' } : block
@@ -663,7 +696,6 @@ export function AdvancedNotionEditor({
         
         // Sinon, supprimer le bloc et aller au suivant ou précédent
         if (blocks.length > 1) {
-          console.log('Deleting block and navigating to next/previous');
           // Déterminer vers quel bloc aller
           let targetBlockIndex: number;
           if (currentIndex < blocks.length - 1) {
@@ -675,7 +707,6 @@ export function AdvancedNotionEditor({
           }
           
           const targetBlock = blocks[targetBlockIndex === currentIndex ? currentIndex + 1 : targetBlockIndex];
-          console.log('Target block for navigation:', targetBlock.id);
           
           // Supprimer le bloc courant
           setBlocks(prevBlocks => prevBlocks.filter(block => block.id !== blockId));
@@ -695,7 +726,7 @@ export function AdvancedNotionEditor({
         }
       }
       // Si on est à la fin du bloc et qu'il y a un bloc suivant, fusionner
-      else if (cursorPosition === textLength && currentIndex < blocks.length - 1) {
+      else if (currentSelectionStart === textLength && currentIndex < blocks.length - 1) {
         e.preventDefault();
         const nextBlock = blocks[currentIndex + 1];
         const currentContent = currentBlock?.content || '';
@@ -768,7 +799,7 @@ export function AdvancedNotionEditor({
   };
 
   // Gestion du drag & drop avec @hello-pangea/dnd
-  const handleDragEnd = (result: any) => {
+  const handleDragEnd = (result: { destination?: { index: number } | null; source: { index: number } }) => {
     if (!result.destination) {
       return;
     }
@@ -791,7 +822,19 @@ export function AdvancedNotionEditor({
     toast.success('Bloc déplacé avec succès');
   };
 
+  // Helper pour obtenir les classes d'alignement
+  const getAlignmentClass = (alignment?: 'left' | 'center' | 'right') => {
+    switch (alignment) {
+      case 'center': return 'text-center';
+      case 'right': return 'text-right';
+      case 'left':
+      default: return 'text-left';
+    }
+  };
+
   const renderBlock = (block: Block) => {
+    const alignmentClass = getAlignmentClass(block.alignment);
+    
     const commonProps = {
       'data-block-id': block.id,
       onKeyDown: (e: React.KeyboardEvent) => handleKeyDown(e, block.id),
@@ -812,7 +855,7 @@ export function AdvancedNotionEditor({
           <TableBlock
             key={block.id}
             id={block.id}
-            data={block.data || getDefaultDataForType('table')}
+            data={(block.data as TableData) || (getDefaultDataForType('table') as TableData)}
             onUpdate={handleBlockUpdate}
             onDelete={deleteBlock}
           />
@@ -822,7 +865,7 @@ export function AdvancedNotionEditor({
           <ImageBlock
             key={block.id}
             id={block.id}
-            data={block.data || getDefaultDataForType('image')}
+            data={(block.data as ImageData) || (getDefaultDataForType('image') as ImageData)}
             onUpdate={handleBlockUpdate}
             onDelete={deleteBlock}
           />
@@ -832,7 +875,7 @@ export function AdvancedNotionEditor({
           <CalendarBlock
             key={block.id}
             id={block.id}
-            data={block.data || getDefaultDataForType('calendar')}
+            data={(block.data as CalendarData) || (getDefaultDataForType('calendar') as CalendarData)}
             onUpdate={handleBlockUpdate}
             onDelete={deleteBlock}
           />
@@ -842,7 +885,7 @@ export function AdvancedNotionEditor({
           <TodoBlock
             key={block.id}
             id={block.id}
-            data={block.data || getDefaultDataForType('todoList')}
+            data={(block.data as TodoData) || (getDefaultDataForType('todoList') as TodoData)}
             onUpdate={handleBlockUpdate}
             onDelete={deleteBlock}
           />
@@ -851,73 +894,79 @@ export function AdvancedNotionEditor({
         return <div className="w-full h-px bg-border my-4" />;
       case 'heading1':
         return (
-          <TransparentRichTextEditor
-            value={block.content}
-            onChange={(newContent) => handleBlockChange(block.id, newContent)}
-            formats={block.formats || []}
-            onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
-            onKeyDown={(e) => handleKeyDown(e, block.id)}
-            onFocus={(e) => {
-              const target = e.target as HTMLInputElement | HTMLTextAreaElement;
-              const position = target.selectionStart || 0;
-              lastCursorPosition.current = {
-                blockId: block.id,
-                position,
-                content: target.value
-              };
-            }}
-            placeholder="Titre 1"
-            className="w-full bg-transparent border-none outline-none text-3xl font-bold placeholder:text-muted-foreground"
-            data-block-id={block.id}
-          />
+          <div className={alignmentClass}>
+            <TransparentRichTextEditor
+              value={block.content}
+              onChange={(newContent) => handleBlockChange(block.id, newContent)}
+              formats={block.formats || []}
+              onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
+              onKeyDown={(e) => handleKeyDown(e, block.id)}
+              onFocus={(e) => {
+                const target = e.target as HTMLInputElement | HTMLTextAreaElement;
+                const position = target.selectionStart || 0;
+                lastCursorPosition.current = {
+                  blockId: block.id,
+                  position,
+                  content: target.value
+                };
+              }}
+              placeholder="Titre 1"
+              className={`w-full bg-transparent border-none outline-none text-3xl font-bold placeholder:text-muted-foreground ${alignmentClass}`}
+              data-block-id={block.id}
+            />
+          </div>
         );
       case 'heading2':
         return (
-          <TransparentRichTextEditor
-            value={block.content}
-            onChange={(newContent) => handleBlockChange(block.id, newContent)}
-            formats={block.formats || []}
-            onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
-            onKeyDown={(e) => handleKeyDown(e, block.id)}
-            onFocus={(e) => {
-              const target = e.target as HTMLInputElement | HTMLTextAreaElement;
-              const position = target.selectionStart || 0;
-              lastCursorPosition.current = {
-                blockId: block.id,
-                position,
-                content: target.value
-              };
-            }}
-            placeholder="Titre 2"
-            className="w-full bg-transparent border-none outline-none text-2xl font-semibold placeholder:text-muted-foreground"
-            data-block-id={block.id}
-          />
+          <div className={alignmentClass}>
+            <TransparentRichTextEditor
+              value={block.content}
+              onChange={(newContent) => handleBlockChange(block.id, newContent)}
+              formats={block.formats || []}
+              onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
+              onKeyDown={(e) => handleKeyDown(e, block.id)}
+              onFocus={(e) => {
+                const target = e.target as HTMLInputElement | HTMLTextAreaElement;
+                const position = target.selectionStart || 0;
+                lastCursorPosition.current = {
+                  blockId: block.id,
+                  position,
+                  content: target.value
+                };
+              }}
+              placeholder="Titre 2"
+              className={`w-full bg-transparent border-none outline-none text-2xl font-semibold placeholder:text-muted-foreground ${alignmentClass}`}
+              data-block-id={block.id}
+            />
+          </div>
         );
       case 'heading3':
         return (
-          <TransparentRichTextEditor
-            value={block.content}
-            onChange={(newContent) => handleBlockChange(block.id, newContent)}
-            formats={block.formats || []}
-            onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
-            onKeyDown={(e) => handleKeyDown(e, block.id)}
-            onFocus={(e) => {
-              const target = e.target as HTMLInputElement | HTMLTextAreaElement;
-              const position = target.selectionStart || 0;
-              lastCursorPosition.current = {
-                blockId: block.id,
-                position,
-                content: target.value
-              };
-            }}
-            placeholder="Titre 3"
-            className="w-full bg-transparent border-none outline-none text-xl font-medium placeholder:text-muted-foreground"
-            data-block-id={block.id}
-          />
+          <div className={alignmentClass}>
+            <TransparentRichTextEditor
+              value={block.content}
+              onChange={(newContent) => handleBlockChange(block.id, newContent)}
+              formats={block.formats || []}
+              onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
+              onKeyDown={(e) => handleKeyDown(e, block.id)}
+              onFocus={(e) => {
+                const target = e.target as HTMLInputElement | HTMLTextAreaElement;
+                const position = target.selectionStart || 0;
+                lastCursorPosition.current = {
+                  blockId: block.id,
+                  position,
+                  content: target.value
+                };
+              }}
+              placeholder="Titre 3"
+              className={`w-full bg-transparent border-none outline-none text-xl font-medium placeholder:text-muted-foreground ${alignmentClass}`}
+              data-block-id={block.id}
+            />
+          </div>
         );
       case 'quote':
         return (
-          <div className="border-l-4 border-muted pl-4">
+          <div className={`border-l-4 border-muted pl-4 ${alignmentClass}`}>
             <TransparentRichTextEditor
               value={block.content}
               onChange={(newContent) => handleBlockChange(block.id, newContent)}
@@ -934,14 +983,14 @@ export function AdvancedNotionEditor({
                 };
               }}
               placeholder="Citation..."
-              className="w-full bg-transparent border-none outline-none resize-none italic text-muted-foreground placeholder:text-muted-foreground"
+              className={`w-full bg-transparent border-none outline-none resize-none italic text-muted-foreground placeholder:text-muted-foreground ${alignmentClass}`}
               data-block-id={block.id}
             />
           </div>
         );
       case 'code':
         return (
-          <div className="bg-muted rounded-md p-3 font-mono">
+          <div className={`bg-muted rounded-md p-3 font-mono ${alignmentClass}`}>
             <textarea
               {...commonProps}
               className="w-full bg-transparent border-none outline-none resize-none font-mono text-sm placeholder:text-muted-foreground"
@@ -952,34 +1001,104 @@ export function AdvancedNotionEditor({
             />
           </div>
         );
+      case 'bulletList':
+        return (
+          <div className={`flex items-start gap-2 ${alignmentClass}`}>
+            <div className="w-2 h-2 bg-current rounded-full mt-2 flex-shrink-0 opacity-70" />
+            <TransparentRichTextEditor
+              ref={(ref) => {
+                if (ref) {
+                  blockRefs.current.set(block.id, ref);
+                } else {
+                  blockRefs.current.delete(block.id);
+                }
+              }}
+              value={block.content}
+              onChange={(newContent) => handleBlockChange(block.id, newContent)}
+              formats={block.formats || []}
+              onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
+              onKeyDown={(e) => handleKeyDown(e, block.id)}
+              onFocus={(e) => {
+                const target = e.target as HTMLInputElement | HTMLTextAreaElement;
+                const position = target.selectionStart || 0;
+                lastCursorPosition.current = {
+                  blockId: block.id,
+                  position,
+                  content: target.value
+                };
+              }}
+              onSelectionChange={onSelectionChange}
+              placeholder="Élément de liste"
+              className={`flex-1 w-full bg-transparent border-none outline-none resize-none placeholder:text-muted-foreground ${alignmentClass}`}
+              data-block-id={block.id}
+            />
+          </div>
+        );
+      case 'numberedList':
+        return (
+          <div className={`flex items-start gap-2 ${alignmentClass}`}>
+            <div className="min-w-[1.5rem] mt-1 text-sm font-medium text-muted-foreground flex-shrink-0">
+              {blocks.filter(b => b.type === 'numberedList').indexOf(block) + 1}.
+            </div>
+            <TransparentRichTextEditor
+              ref={(ref) => {
+                if (ref) {
+                  blockRefs.current.set(block.id, ref);
+                } else {
+                  blockRefs.current.delete(block.id);
+                }
+              }}
+              value={block.content}
+              onChange={(newContent) => handleBlockChange(block.id, newContent)}
+              formats={block.formats || []}
+              onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
+              onKeyDown={(e) => handleKeyDown(e, block.id)}
+              onFocus={(e) => {
+                const target = e.target as HTMLInputElement | HTMLTextAreaElement;
+                const position = target.selectionStart || 0;
+                lastCursorPosition.current = {
+                  blockId: block.id,
+                  position,
+                  content: target.value
+                };
+              }}
+              onSelectionChange={onSelectionChange}
+              placeholder="Élément numéroté"
+              className={`flex-1 w-full bg-transparent border-none outline-none resize-none placeholder:text-muted-foreground ${alignmentClass}`}
+              data-block-id={block.id}
+            />
+          </div>
+        );
       default:
         return (
-          <TransparentRichTextEditor
-            ref={(ref) => {
-              if (ref) {
-                blockRefs.current.set(block.id, ref);
-              } else {
-                blockRefs.current.delete(block.id);
-              }
-            }}
-            value={block.content}
-            onChange={(newContent) => handleBlockChange(block.id, newContent)}
-            formats={block.formats || []}
-            onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
-            onKeyDown={(e) => handleKeyDown(e, block.id)}
-            onFocus={(e) => {
-              const target = e.target as HTMLInputElement | HTMLTextAreaElement;
-              const position = target.selectionStart || 0;
-              lastCursorPosition.current = {
-                blockId: block.id,
-                position,
-                content: target.value
-              };
-            }}
-            onSelectionChange={onSelectionChange}
-            className="w-full bg-transparent border-none outline-none resize-none placeholder:text-muted-foreground"
-            data-block-id={block.id}
-          />
+          <div className={alignmentClass}>
+            <TransparentRichTextEditor
+              ref={(ref) => {
+                if (ref) {
+                  blockRefs.current.set(block.id, ref);
+                } else {
+                  blockRefs.current.delete(block.id);
+                }
+              }}
+              value={block.content}
+              onChange={(newContent) => handleBlockChange(block.id, newContent)}
+              formats={block.formats || []}
+              onFormatsChange={(formats) => handleBlockFormatsChange(block.id, formats)}
+              onKeyDown={(e) => handleKeyDown(e, block.id)}
+              onFocus={(e) => {
+                const target = e.target as HTMLInputElement | HTMLTextAreaElement;
+                const position = target.selectionStart || 0;
+                lastCursorPosition.current = {
+                  blockId: block.id,
+                  position,
+                  content: target.value
+                };
+              }}
+              onSelectionChange={onSelectionChange}
+              className={`w-full bg-transparent border-none outline-none resize-none placeholder:text-muted-foreground ${alignmentClass}`}
+              data-block-id={block.id}
+            />
+          </div>
         );
     }
   };
@@ -1000,31 +1119,6 @@ export function AdvancedNotionEditor({
     });
   };
 
-  // Fonction pour obtenir l'éditeur actuellement focalisé
-  const getActiveEditor = useCallback((): HTMLTextAreaElement | null => {
-    const activeElement = document.activeElement;
-    if (activeElement && activeElement.tagName === 'TEXTAREA') {
-      return activeElement as HTMLTextAreaElement;
-    }
-    
-    // Si aucun textarea n'est focalisé, chercher le dernier éditeur utilisé
-    if (lastCursorPosition.current) {
-      const blockRef = blockRefs.current.get(lastCursorPosition.current.blockId);
-      if (blockRef) {
-        // Essayer d'entrer en mode édition si pas déjà actif
-        const textarea = blockRef.getTextarea();
-        if (!textarea && blockRef.enterEditMode) {
-          // Force l'entrée en mode édition pour ce bloc
-          blockRef.enterEditMode();
-          // Retourner le textarea après un délai court
-          setTimeout(() => blockRef.getTextarea(), 10);
-        }
-        return textarea;
-      }
-    }
-    
-    return null;
-  }, []);
 
   // Expose insertBlock function to parent
   useEffect(() => {
@@ -1033,25 +1127,6 @@ export function AdvancedNotionEditor({
     }
   }, [onInsertBlockRequest, insertBlock]);
 
-  // Expose getActiveEditor function to parent
-  useEffect(() => {
-    if (onGetActiveEditor) {
-      onGetActiveEditor(getActiveEditor);
-    }
-  }, [onGetActiveEditor, getActiveEditor]);
-
-  // Fonction de formatage qui utilise handleBlockChange
-  const formatBlockContent = useCallback((blockId: string, newContent: string) => {
-    console.log('formatBlockContent called:', { blockId, newContent });
-    handleBlockChange(blockId, newContent);
-  }, []);
-
-  // Expose format function to parent
-  useEffect(() => {
-    if (onFormatRequest) {
-      onFormatRequest(formatBlockContent);
-    }
-  }, [onFormatRequest, formatBlockContent]);
 
   // Expose blockRefs to parent
   useEffect(() => {
@@ -1059,6 +1134,27 @@ export function AdvancedNotionEditor({
       onBlockRefsRequest(() => blockRefs.current);
     }
   }, [onBlockRefsRequest]);
+
+  // Expose block alignment function to parent
+  useEffect(() => {
+    if (onBlockAlignmentRequest) {
+      onBlockAlignmentRequest(handleBlockAlignment);
+    }
+  }, [onBlockAlignmentRequest, handleBlockAlignment]);
+
+  // Expose block type change function to parent
+  useEffect(() => {
+    if (onBlockTypeChangeRequest) {
+      onBlockTypeChangeRequest(handleBlockTypeChange);
+    }
+  }, [onBlockTypeChangeRequest, handleBlockTypeChange]);
+
+  // Send current blocks state to parent whenever it changes
+  useEffect(() => {
+    if (onCurrentBlocksUpdate) {
+      onCurrentBlocksUpdate(blocks);
+    }
+  }, [blocks, onCurrentBlocksUpdate]);
 
   return (
     <div className="relative" ref={editorRef}>
