@@ -229,13 +229,6 @@ Le schéma Prisma inclut les modèles suivants :
 - `PomodoroSession` - Suivi Pomodoro
 - Et plus...
 
-## 🚀 Déploiement
-
-### Vercel (Recommandé)
-
-1. Connectez votre repository à Vercel
-2. Configurez les variables d'environnement
-3. Déployez automatiquement
 
 
 ## 🔧 Scripts Disponibles
